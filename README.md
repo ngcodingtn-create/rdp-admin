@@ -1,5 +1,12 @@
 # RDP Control: a cheap Windows cloud desktop that you turn on and off from a website
 
+**Live:** https://rdp-admin.vercel.app (Vercel team `infolabtn`, project `rdp-admin`)
+- Every push to `main` deploys automatically.
+- A firewall rule allows 5 login attempts per minute per IP and blocks an IP for 30 min after that.
+- To show the Windows password on the dashboard, add `RDP_PASSWORD` in Vercel → rdp-admin → Settings → Environment Variables (Production, Sensitive), then redeploy.
+
+**From this PC:** `.\pc\rdp.ps1 open` resumes the VM and opens Remote Desktop. `.\pc\rdp.ps1 close` suspends it.
+
 A Windows Server desktop on Google Cloud. A small website (hosted on Vercel) turns it on and off.
 When you close it, the VM is **suspended**: RAM and every open app are saved to disk, like closing a laptop lid.
 When you resume, your session is exactly as you left it, still signed in to everything. Most of the cost stops while it is suspended.
