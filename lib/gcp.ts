@@ -56,7 +56,15 @@ export type VmStatus = {
   name: string;
   status: string;
   machineType: string;
+  cpus: number | null;
+  memoryGb: number | null;
+  diskGb: number | null;
+  zone: string;
+  project: string;
   ip: string | null;
+  internalIp: string | null;
+  cpuPlatform: string | null;
+  createdAt: string | null;
   lastStart: string | null;
   lastStop: string | null;
   lastSuspend: string | null;
@@ -66,20 +74,50 @@ type Instance = {
   name: string;
   status: string;
   machineType: string;
-  networkInterfaces?: { accessConfigs?: { natIP?: string }[] }[];
+  zone: string;
+  cpuPlatform?: string;
+  creationTimestamp?: string;
+  disks?: { boot?: boolean; diskSizeGb?: string }[];
+  networkInterfaces?: { networkIP?: string; accessConfigs?: { natIP?: string }[] }[];
   lastStartTimestamp?: string;
   lastStopTimestamp?: string;
   lastSuspendedTimestamp?: string;
 };
 
+// vCPU / RAM (GB) of the predefined types we're likely to use; reading machineTypes would need another permission.
+const SHAPES: Record<string, [number, number]> = {
+  "e2-medium": [2, 4],
+  "e2-standard-2": [2, 8],
+  "e2-standard-4": [4, 16],
+  "e2-standard-8": [8, 32],
+  "e2-highmem-2": [2, 16],
+  "e2-highmem-4": [4, 32],
+  "n2-standard-2": [2, 8],
+  "n2-standard-4": [4, 16],
+  "n2-highmem-2": [2, 16],
+  "n2d-standard-2": [2, 8],
+  "n2d-standard-4": [4, 16],
+};
+
 export async function getVm(): Promise<VmStatus> {
   const c = await auth();
   const { data } = await c.request<Instance>({ url: instanceUrl() });
+  const machineType = data.machineType.split("/").pop() ?? data.machineType;
+  const boot = data.disks?.find((d) => d.boot) ?? data.disks?.[0];
+  const nic = data.networkInterfaces?.[0];
   return {
     name: data.name,
     status: data.status,
-    machineType: data.machineType.split("/").pop() ?? data.machineType,
-    ip: data.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP ?? null,
+    machineType,
+    cpus: SHAPES[machineType]?.[0] ?? null,
+    memoryGb: SHAPES[machineType]?.[1] ?? null,
+    diskGb: boot?.diskSizeGb ? Number(boot.diskSizeGb) : null,
+    zone: data.zone.split("/").pop() ?? data.zone,
+    project: env("GCP_PROJECT_ID"),
+    ip: nic?.accessConfigs?.[0]?.natIP ?? null,
+    internalIp: nic?.networkIP ?? null,
+    cpuPlatform: data.cpuPlatform ?? null,
+    createdAt: data.creationTimestamp ?? null,
     lastStart: data.lastStartTimestamp ?? null,
     lastStop: data.lastStopTimestamp ?? null,
     lastSuspend: data.lastSuspendedTimestamp ?? null,

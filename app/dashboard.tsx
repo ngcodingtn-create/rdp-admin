@@ -6,13 +6,25 @@ type Vm = {
   name: string;
   status: string;
   machineType: string;
+  cpus: number | null;
+  memoryGb: number | null;
+  diskGb: number | null;
+  zone: string;
+  project: string;
   ip: string | null;
+  internalIp: string | null;
+  cpuPlatform: string | null;
+  createdAt: string | null;
   lastStart: string | null;
   lastStop: string | null;
   lastSuspend: string | null;
 };
 
+type Creds = { username: string | null; password: string | null };
 type Action = "start" | "stop" | "suspend" | "resume";
+
+// All-in running cost (machine + Windows license + IP + traffic), e2-highmem-2 in europe-west1.
+const HOURLY = 0.2;
 
 const LABELS: Record<string, { text: string; tone: "ok" | "warn" | "off" | "sleep" }> = {
   RUNNING: { text: "Running", tone: "ok" },
@@ -27,9 +39,16 @@ const LABELS: Record<string, { text: string; tone: "ok" | "warn" | "off" | "slee
   REPAIRING: { text: "Repairing…", tone: "warn" },
 };
 
+const PENDING_TEXT: Record<Action, string> = {
+  start: "Starting…",
+  resume: "Resuming…",
+  suspend: "Suspending…",
+  stop: "Shutting down…",
+};
+
 const isBusy = (s: string) => LABELS[s]?.tone === "warn";
 
-function since(ts: string | null) {
+function ago(ts: string | null) {
   if (!ts) return "—";
   const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
   if (mins < 60) return `${mins} min ago`;
@@ -38,11 +57,32 @@ function since(ts: string | null) {
   return `${Math.floor(h / 24)} days ago`;
 }
 
+function hoursSince(ts: string | null) {
+  return ts ? Math.max(0, (Date.now() - new Date(ts).getTime()) / 3600000) : 0;
+}
+
+function Copy({ value, label = "copy" }: { value: string; label?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      className="link"
+      onClick={async () => {
+        await navigator.clipboard.writeText(value);
+        setDone(true);
+        setTimeout(() => setDone(false), 1500);
+      }}
+    >
+      {done ? "copied" : label}
+    </button>
+  );
+}
+
 export default function Dashboard() {
   const [vm, setVm] = useState<Vm | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<Action | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [creds, setCreds] = useState<Creds | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const refresh = useCallback(async () => {
     const res = await fetch("/api/vm", { cache: "no-store" });
@@ -67,6 +107,13 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [refresh, pending, vm?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    fetch("/api/credentials", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setCreds)
+      .catch(() => setCreds(null));
+  }, []);
+
   // Clear the pending flag once Google reports a transition.
   useEffect(() => {
     if (!pending || !vm) return;
@@ -80,7 +127,11 @@ export default function Dashboard() {
   }, [vm, pending]);
 
   async function act(action: Action) {
-    if (action === "stop" && !confirm("Full shutdown closes all your apps and windows. Use Suspend to keep them. Shut down anyway?")) return;
+    if (
+      action === "stop" &&
+      !confirm("Full shutdown closes all your apps and windows. Use Suspend to keep them. Shut down anyway?")
+    )
+      return;
     setPending(action);
     setError(null);
     const res = await fetch(`/api/vm/${action}`, { method: "POST" });
@@ -97,54 +148,32 @@ export default function Dashboard() {
     window.location.href = "/login";
   }
 
-  async function copyIp() {
-    if (!vm?.ip) return;
-    await navigator.clipboard.writeText(vm.ip);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-
   const status = vm?.status ?? "";
   const label = LABELS[status] ?? { text: status || "Loading…", tone: "warn" as const };
   const running = status === "RUNNING";
   const off = status === "TERMINATED" || status === "STOPPED";
   const suspended = status === "SUSPENDED";
   const busy = pending !== null || isBusy(status);
+  const address = vm?.ip ? `${vm.ip}:3389` : null;
+  const sessionHours = running ? hoursSince(vm?.lastStart ?? null) : 0;
+  const specs = [
+    vm?.cpus && `${vm.cpus} vCPU`,
+    vm?.memoryGb && `${vm.memoryGb} GB RAM`,
+    vm?.diskGb && `${vm.diskGb} GB SSD`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <>
       <div className="card">
         <h1>{vm?.name ?? "Cloud desktop"}</h1>
-        <p className="muted">{vm?.machineType ?? " "}</p>
+        <p className="muted">{vm ? `Windows Server 2022 · ${vm.machineType}${specs ? ` · ${specs}` : ""}` : " "}</p>
 
         <div className="status">
           <span className={`dot ${pending ? "warn" : label.tone}`} />
-          {pending ? `${pending[0].toUpperCase()}${pending.slice(1)}ing…`.replace("Stoping", "Stopping") : label.text}
+          {pending ? PENDING_TEXT[pending] : label.text}
         </div>
-
-        <dl className="meta">
-          <dt>IP address</dt>
-          <dd>
-            {vm?.ip ?? "—"}{" "}
-            {vm?.ip && (
-              <button className="link" onClick={copyIp}>
-                {copied ? "copied" : "copy"}
-              </button>
-            )}
-          </dd>
-          {running && (
-            <>
-              <dt>Running since</dt>
-              <dd>{since(vm?.lastStart ?? null)}</dd>
-            </>
-          )}
-          {suspended && (
-            <>
-              <dt>Suspended</dt>
-              <dd>{since(vm?.lastSuspend ?? null)}</dd>
-            </>
-          )}
-        </dl>
 
         <div className="actions">
           {running && (
@@ -155,7 +184,10 @@ export default function Dashboard() {
               <button disabled={busy} onClick={() => act("suspend")}>
                 Suspend — keep everything open
               </button>
-              <p className="hint">Saves your session like closing a laptop lid. Stops the hourly Windows + CPU charge.</p>
+              <p className="hint">
+                Like closing a laptop lid: apps and logins stay, the hourly charge stops. Close the RDP window first
+                (don&apos;t sign out).
+              </p>
               <button className="danger" disabled={busy} onClick={() => act("stop")}>
                 Full shutdown
               </button>
@@ -175,6 +207,87 @@ export default function Dashboard() {
         </div>
 
         {error && <p className="error">{error}</p>}
+      </div>
+
+      <div className="card">
+        <h2>Connection</h2>
+        <dl className="meta">
+          <dt>Address</dt>
+          <dd>
+            {address ?? "— (only while running)"} {address && <Copy value={address} />}
+          </dd>
+          <dt>Username</dt>
+          <dd>
+            {creds?.username ?? "— (set RDP_USERNAME)"} {creds?.username && <Copy value={creds.username} />}
+          </dd>
+          <dt>Password</dt>
+          <dd>
+            {creds?.password ? (
+              <>
+                <span className="mono">{showPassword ? creds.password : "••••••••••••"}</span>{" "}
+                <button className="link" onClick={() => setShowPassword((s) => !s)}>
+                  {showPassword ? "hide" : "show"}
+                </button>{" "}
+                <Copy value={creds.password} />
+              </>
+            ) : (
+              "— (set RDP_PASSWORD)"
+            )}
+          </dd>
+          <dt>Command</dt>
+          <dd>
+            {vm?.ip ? (
+              <>
+                <span className="mono">mstsc /v:{vm.ip}</span> <Copy value={`mstsc /v:${vm.ip}`} />
+              </>
+            ) : (
+              "—"
+            )}
+          </dd>
+        </dl>
+        <p className="hint">
+          On a phone or Mac use the Windows App (Microsoft Remote Desktop) with the address, username and password above.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>Details</h2>
+        <dl className="meta">
+          <dt>Status</dt>
+          <dd>{status || "—"}</dd>
+          {running && (
+            <>
+              <dt>Running since</dt>
+              <dd>
+                {ago(vm?.lastStart ?? null)} · ~${(sessionHours * HOURLY).toFixed(2)} so far
+              </dd>
+            </>
+          )}
+          {suspended && (
+            <>
+              <dt>Suspended</dt>
+              <dd>{ago(vm?.lastSuspend ?? null)} · ~$0.36/day while suspended</dd>
+            </>
+          )}
+          <dt>Cost</dt>
+          <dd>~${HOURLY.toFixed(2)}/h running · ~$0.36/day suspended</dd>
+          <dt>Auto-suspend</dt>
+          <dd>after 30 min with no RDP and Claude idle</dd>
+          <dt>Zone</dt>
+          <dd>{vm?.zone ?? "—"}</dd>
+          <dt>Project</dt>
+          <dd>{vm?.project ?? "—"}</dd>
+          <dt>Internal IP</dt>
+          <dd>{vm?.internalIp ?? "—"}</dd>
+          <dt>CPU platform</dt>
+          <dd>{vm?.cpuPlatform ?? "—"}</dd>
+          <dt>Created</dt>
+          <dd>{vm?.createdAt ? new Date(vm.createdAt).toLocaleDateString() : "—"}</dd>
+          <dt>Last suspended</dt>
+          <dd>{ago(vm?.lastSuspend ?? null)}</dd>
+          <dt>Last shut down</dt>
+          <dd>{ago(vm?.lastStop ?? null)}</dd>
+        </dl>
       </div>
 
       <footer>

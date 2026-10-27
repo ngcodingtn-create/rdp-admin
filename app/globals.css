@@ -60,6 +60,21 @@ h1 {
   margin: 0 0 4px;
 }
 
+.card + .card {
+  margin-top: 16px;
+}
+
+h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.mono {
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 13px;
+}
+
 .muted {
   color: var(--muted);
   font-size: 14px;
