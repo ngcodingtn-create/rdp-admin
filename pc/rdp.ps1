@@ -11,7 +11,7 @@ param([ValidateSet("open", "close", "status", "shutdown")][string]$Command = "st
 $Project = "cohesive-bolt-510011-q3"
 $Zone = "europe-west1-b"
 $Vm = "rdp-desktop"
-$User = $env:RDP_USER   # optional: your Windows user name on the VM, pre-filled in the .rdp file
+$User = if ($env:RDP_USER) { $env:RDP_USER } else { "ngcoding" }   # Windows user on the VM, pre-filled in the .rdp file
 
 $gcloud = (Get-Command gcloud -ErrorAction SilentlyContinue).Source
 if (-not $gcloud) { $gcloud = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd" }
@@ -22,13 +22,13 @@ function Wait-Status($want) {
   do { Start-Sleep 5; $s = (Get-Vm).status; Write-Host "  $s" } while ($s -notin $want)
 }
 
-$vm = Get-Vm
-if (-not $vm) { throw "Could not read the VM. Run: gcloud auth login" }
-$status = $vm.status
+$inst = Get-Vm
+if (-not $inst) { throw "Could not read the VM. Run: gcloud auth login" }
+$status = $inst.status
 
 switch ($Command) {
   "status" {
-    $ip = $vm.networkInterfaces[0].accessConfigs[0].natIP
+    $ip = $inst.networkInterfaces[0].accessConfigs[0].natIP
     Write-Host "$Vm is $status$(if ($ip) { " at $ip" })"
   }
   "open" {
