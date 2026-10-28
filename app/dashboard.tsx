@@ -18,13 +18,14 @@ type Vm = {
   lastStart: string | null;
   lastStop: string | null;
   lastSuspend: string | null;
+  hourly: number | null;
+  suspendedDaily: number | null;
 };
 
 type Creds = { username: string | null; password: string | null };
 type Action = "start" | "stop" | "suspend" | "resume";
 
-// All-in running cost (machine + Windows license + IP + traffic), e2-highmem-2 in europe-west1.
-const HOURLY = 0.2;
+const usd = (n: number | null | undefined) => (n == null ? "?" : `$${n.toFixed(2)}`);
 
 const LABELS: Record<string, { text: string; tone: "ok" | "warn" | "off" | "sleep" }> = {
   RUNNING: { text: "Running", tone: "ok" },
@@ -259,18 +260,22 @@ export default function Dashboard() {
             <>
               <dt>Running since</dt>
               <dd>
-                {ago(vm?.lastStart ?? null)} · ~${(sessionHours * HOURLY).toFixed(2)} so far
+                {ago(vm?.lastStart ?? null)} · ~{usd(vm?.hourly != null ? sessionHours * vm.hourly : null)} so far
               </dd>
             </>
           )}
           {suspended && (
             <>
               <dt>Suspended</dt>
-              <dd>{ago(vm?.lastSuspend ?? null)} · ~$0.36/day while suspended</dd>
+              <dd>
+                {ago(vm?.lastSuspend ?? null)} · ~{usd(vm?.suspendedDaily)}/day while suspended
+              </dd>
             </>
           )}
           <dt>Cost</dt>
-          <dd>~${HOURLY.toFixed(2)}/h running · ~$0.36/day suspended</dd>
+          <dd>
+            ~{usd(vm?.hourly)}/h running · ~{usd(vm?.suspendedDaily)}/day suspended
+          </dd>
           <dt>Auto-suspend</dt>
           <dd>after 30 min with no RDP and Claude idle</dd>
           <dt>Zone</dt>

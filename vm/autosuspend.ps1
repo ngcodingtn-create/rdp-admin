@@ -2,12 +2,13 @@
   Suspends this Compute Engine VM once nobody is using it:
     - no RDP connection, AND
     - Claude Code hasn't written to any session log for $IdleMinutes (it writes on every step), AND
-    - the overnight runner's heartbeat file is older than $IdleMinutes, AND
+    - no overnight runner has touched its heartbeat-<pid> file for $IdleMinutes, AND
     - no "keepawake" file exists (create it to keep the VM on no matter what; delete it to go back to normal).
   Installed by setup-windows.ps1 as the "RDP Auto-Suspend" scheduled task (runs as SYSTEM every 5 min).
   Log: C:\ProgramData\rdp-autosuspend\log.txt
 
-  -Now  suspend immediately unless someone is connected over RDP (used by overnight.ps1 when it finishes).
+  -Now  suspend immediately unless someone is connected over RDP, keepawake is set, or another
+        overnight runner is still working (used by overnight.ps1 when it finishes).
 
   Needs: the VM's service account allowed to call compute.instances.suspend on this VM,
   and the VM's access scope set to cloud-platform (see README).
@@ -18,7 +19,6 @@ $IdleMinutes = 30
 $dir = "C:\ProgramData\rdp-autosuspend"
 $stateFile = "$dir\state.json"
 $logFile = "$dir\log.txt"
-$heartbeat = "$dir\heartbeat"
 $keepAwake = "$dir\keepawake"
 $now = Get-Date
 
@@ -29,6 +29,11 @@ function Recent($time) { $time -and (($now - $time).TotalMinutes -lt $IdleMinute
 $tcp = [bool](Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue)
 $session = [bool]((qwinsta 2>$null) -match "rdp-tcp#\S*\s+.*\s+Active")
 $rdp = $tcp -or $session
+
+# Each overnight runner touches its own heartbeat-<pid> file every minute.
+$heartbeats = Get-ChildItem $dir -File -Filter "heartbeat*" -ErrorAction SilentlyContinue
+$heartbeats | Where-Object { ($now - $_.LastWriteTime).TotalDays -gt 1 } | Remove-Item -ErrorAction SilentlyContinue
+$runners = @($heartbeats | Where-Object { Recent $_.LastWriteTime }).Count
 
 function Suspend-Vm($reason) {
   try {
@@ -52,6 +57,7 @@ function Suspend-Vm($reason) {
 if ($Now) {
   if ($rdp) { Log "Suspend requested but someone is connected over RDP; leaving it on"; exit 0 }
   if (Test-Path $keepAwake) { Log "Suspend requested but keepawake is set; leaving it on"; exit 0 }
+  if ($runners) { Log "Suspend requested but $runners other overnight runner(s) still working; leaving it on"; exit 0 }
   Suspend-Vm "Suspend requested"
   exit 0
 }
@@ -60,8 +66,7 @@ if ($Now) {
 $claudeLog = Get-ChildItem "C:\Users\*\.claude\projects" -Recurse -File -Filter *.jsonl -ErrorAction SilentlyContinue |
   Measure-Object -Property LastWriteTime -Maximum
 $claude = Recent $claudeLog.Maximum
-$runner = (Test-Path $heartbeat) -and (Recent (Get-Item $heartbeat).LastWriteTime)
-$busy = $rdp -or $claude -or $runner -or (Test-Path $keepAwake)
+$busy = $rdp -or $claude -or $runners -or (Test-Path $keepAwake)
 
 $state = if (Test-Path $stateFile) { Get-Content $stateFile -Raw | ConvertFrom-Json } else { $null }
 

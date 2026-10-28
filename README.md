@@ -219,7 +219,7 @@ For zero prompts, reserve a static IP: `gcloud compute addresses create rdp-ip -
 
 ## Letting Claude Code work while you sleep
 
-The VM only runs the Claude Code program. The model runs on Anthropic's servers, so 2 vCPU / 16 GB is plenty, and a night of work costs about $0.19/hour *while Claude is actually working*. The overnight runner suspends the VM the moment the work is done.
+The VM only runs the Claude Code program. The model runs on Anthropic's servers, so the VM's CPU goes to the tools Claude starts (builds, tests, git, installs) and to Windows itself. A night of work is billed only *while Claude is actually working*: the overnight runner suspends the VM the moment the work is done.
 
 **Setup per project:**
 1. Add `PLAN.md` to the repo: a checklist of small, testable tasks (`- [ ] ...`). Small items work much better than one huge task.
@@ -252,6 +252,37 @@ The VM only runs the Claude Code program. The model runs on Anthropic's servers,
 - **Check `/usage` before a night run.** If the weekly limit is nearly used up, the run will stop early.
 - **You can run overnight work without the VM at all.** If the repo is on GitHub, Claude Code cloud sessions (`claude --cloud "task"` or claude.ai/code) and scheduled tasks (`/schedule`) run on Anthropic's machines while your VM stays suspended. They cost $0 on Google, but still count against your Claude limits. They're Linux-only, and scheduled tasks are a research preview.
 
+## Running 4 Claude sessions at once
+
+**Machine: `t2d-standard-8`** (8 vCPU, 32 GB). On T2D every vCPU is a whole AMD core (no hyperthreading), so 8 vCPU is 8 real cores. `e2-highmem-2` is 1 core shared by 2 threads.
+
+| Machine (europe-west1) | Real cores | RAM | Running, all-in | Suspended |
+|---|---|---|---|---|
+| e2-highmem-2 (before) | 1 | 16 GB | ~$0.21/h | ~$0.42/day |
+| t2d-standard-4 | 4 | 16 GB | ~$0.39/h | ~$0.42/day |
+| **t2d-standard-8** | **8** | **32 GB** | **~$0.76/h** | **~$0.51/day** |
+| c3d-standard-8 | 4 (8 threads) | 32 GB | ~$0.79/h | ~$0.51/day |
+
+Half of the running price is the Windows license ($0.046 per vCPU-hour), so suspending when you stop matters even more on a big machine. At 168 h/month that is ~$128 + ~$15 suspended.
+
+**Change the size** (the VM must be fully stopped, so open windows close once; do it from Cloud Shell or the PC):
+```bash
+gcloud compute instances stop rdp-desktop --zone=europe-west1-b
+gcloud compute instances set-machine-type rdp-desktop --zone=europe-west1-b --machine-type=t2d-standard-8
+gcloud compute instances start rdp-desktop --zone=europe-west1-b
+```
+
+**Then, once, inside the VM** (elevated PowerShell, from the repo's `vm` folder):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tune-for-claude.ps1 -WorkDir C:\work
+```
+It stops Defender from scanning every file Claude, Node and Git touch (the usual cause of 100% CPU on Windows), switches to High performance, turns on long paths, and installs the parallel-safe auto-suspend and overnight scripts. Keep projects under `C:\work`.
+
+**Working in parallel:**
+- Give each session its own folder, or its own git worktree of the same repo, so two sessions never edit the same files: `git worktree add C:\work\app-2 -b feature-2`.
+- Overnight, start one `overnight.ps1` per folder in its own PowerShell window. The VM suspends when the **last** one finishes.
+- All sessions share one Max 5x pool: 4 sessions use the 5-hour window about 4x faster. Use Sonnet for parallel work.
+
 ## Project layout
 ```
 app/
@@ -267,5 +298,6 @@ proxy.ts                     redirects to /login when not signed in
 vm/setup-windows.ps1         one-time Windows setup (run inside the VM)
 vm/autosuspend.ps1           idle watcher installed by the setup script (-Now = suspend immediately)
 vm/overnight.ps1             unattended Claude Code runner that suspends the VM when done
+vm/tune-for-claude.ps1       Defender exclusions, power plan, long paths for parallel Claude sessions
 vm/PROMPT.example.md         per-round instructions for the overnight runner
 ```

@@ -68,6 +68,8 @@ export type VmStatus = {
   lastStart: string | null;
   lastStop: string | null;
   lastSuspend: string | null;
+  hourly: number | null;
+  suspendedDaily: number | null;
 };
 
 type Instance = {
@@ -97,7 +99,37 @@ const SHAPES: Record<string, [number, number]> = {
   "n2-highmem-2": [2, 16],
   "n2d-standard-2": [2, 8],
   "n2d-standard-4": [4, 16],
+  "n2d-standard-8": [8, 32],
+  "t2d-standard-4": [4, 16],
+  "t2d-standard-8": [8, 32],
+  "c3d-standard-4": [4, 16],
+  "c3d-standard-8": [8, 32],
 };
+
+// europe-west1 on-demand USD per vCPU-hour and per GB-hour (Cloud Billing Catalog, Oct 2026).
+const RATES: Record<string, [number, number]> = {
+  e2: [0.02399, 0.00322],
+  n2: [0.03477, 0.00466],
+  n2d: [0.03025, 0.00405],
+  t2d: [0.03025, 0.00405],
+  c3d: [0.03255, 0.00436],
+};
+const WINDOWS_PER_VCPU = 0.046;
+const IP_AND_TRAFFIC = 0.01; // static-ish extras per running hour
+const DISK_PER_GB_MONTH = 0.1; // pd-balanced
+const SAVED_RAM_PER_GB_MONTH = 0.17; // memory kept while suspended
+
+function costs(machineType: string, diskGb: number | null) {
+  const shape = SHAPES[machineType];
+  const rate = RATES[machineType.split("-")[0]];
+  const disk = ((diskGb ?? 0) * DISK_PER_GB_MONTH) / 730;
+  if (!shape || !rate) return { hourly: null, suspendedDaily: null };
+  const [cpus, gb] = shape;
+  return {
+    hourly: cpus * (rate[0] + WINDOWS_PER_VCPU) + gb * rate[1] + IP_AND_TRAFFIC + disk,
+    suspendedDaily: (gb * SAVED_RAM_PER_GB_MONTH * 24) / 730 + disk * 24,
+  };
+}
 
 export async function getVm(): Promise<VmStatus> {
   const c = await auth();
@@ -105,13 +137,14 @@ export async function getVm(): Promise<VmStatus> {
   const machineType = data.machineType.split("/").pop() ?? data.machineType;
   const boot = data.disks?.find((d) => d.boot) ?? data.disks?.[0];
   const nic = data.networkInterfaces?.[0];
+  const diskGb = boot?.diskSizeGb ? Number(boot.diskSizeGb) : null;
   return {
     name: data.name,
     status: data.status,
     machineType,
     cpus: SHAPES[machineType]?.[0] ?? null,
     memoryGb: SHAPES[machineType]?.[1] ?? null,
-    diskGb: boot?.diskSizeGb ? Number(boot.diskSizeGb) : null,
+    diskGb,
     zone: data.zone.split("/").pop() ?? data.zone,
     project: env("GCP_PROJECT_ID"),
     ip: nic?.accessConfigs?.[0]?.natIP ?? null,
@@ -121,6 +154,7 @@ export async function getVm(): Promise<VmStatus> {
     lastStart: data.lastStartTimestamp ?? null,
     lastStop: data.lastStopTimestamp ?? null,
     lastSuspend: data.lastSuspendedTimestamp ?? null,
+    ...costs(machineType, diskGb),
   };
 }
 

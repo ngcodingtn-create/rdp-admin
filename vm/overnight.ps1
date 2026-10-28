@@ -10,8 +10,12 @@
   Each round is a fresh `claude -p` run (fresh context = cheaper on your plan limits than one huge session).
   It stops when: DONE exists, the deadline passes, the weekly limit is hit, or 3 rounds in a row fail.
   On the 5-hour session limit it waits for the reset (the VM costs ~$0.18/h while waiting) and carries on.
-  At the end it suspends the VM, unless you're connected over RDP or pass -NoSuspend.
+  At the end it suspends the VM, unless you're connected over RDP, another runner is still working, or you pass -NoSuspend.
   Logs: <repo>\.overnight\
+
+  Parallel: start one runner per repo (or per git worktree, so they never edit the same files):
+      git -C C:\work\app worktree add C:\work\app-2 -b night-2
+  Every runner draws from the same Claude plan limits, so 4 runners use them up ~4x faster.
 #>
 param(
   [Parameter(Mandatory)][string]$Repo,
@@ -24,7 +28,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $dir = "C:\ProgramData\rdp-autosuspend"
-$heartbeat = "$dir\heartbeat"
+# One heartbeat per runner, so several runners (one per repo) can work in parallel
+# and the last one to finish is the one that suspends the VM.
+$heartbeat = "$dir\heartbeat-$PID"
 $claude = (Get-Command claude).Source
 $deadline = (Get-Date).AddHours($Hours)
 
@@ -87,6 +93,7 @@ while ($true) {
 }
 
 Log "Stopping: $reason"
+Remove-Item $heartbeat -ErrorAction SilentlyContinue
 if ($NoSuspend) { Log "-NoSuspend given; leaving the VM on"; exit 0 }
 Log "Asking the VM to suspend"
 & "$dir\autosuspend.ps1" -Now
