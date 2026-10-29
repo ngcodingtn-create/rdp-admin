@@ -18,6 +18,11 @@ if (-not $gcloud) { $gcloud = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-s
 $common = @("--project=$Project", "--zone=$Zone", "--quiet")
 
 function Get-Vm { & $gcloud compute instances describe $Vm @common --format=json 2>$null | ConvertFrom-Json }
+# The port Windows listens on, as reported by the VM at boot (vm/startup.ps1); 3389 if not reported.
+function Get-RdpPort {
+  $p = & $gcloud compute instances get-guest-attributes $Vm @common --query-path=rdp/port --format="value(value)" 2>$null
+  if ($p -match '^\d+$') { [int]$p } else { 3389 }
+}
 function Wait-Status($want) {
   do { Start-Sleep 5; $s = (Get-Vm).status; Write-Host "  $s" } while ($s -notin $want)
 }
@@ -29,7 +34,7 @@ $status = $inst.status
 switch ($Command) {
   "status" {
     $ip = $inst.networkInterfaces[0].accessConfigs[0].natIP
-    Write-Host "$Vm is $status$(if ($ip) { " at $ip" })"
+    Write-Host "$Vm is $status$(if ($ip) { " at ${ip}:$(Get-RdpPort)" })"
   }
   "open" {
     if ($status -eq "SUSPENDED") { Write-Host "Resuming..."; & $gcloud compute instances resume $Vm @common | Out-Null }
@@ -39,12 +44,13 @@ switch ($Command) {
     $ip = (Get-Vm).networkInterfaces[0].accessConfigs[0].natIP
 
     # Wait until RDP answers (a few seconds after resume, ~1 min after a cold start).
+    # The port is reported by the boot script, so after a cold start ask again until it shows up.
     Write-Host "Waiting for Remote Desktop on $ip..."
-    while (-not (Test-NetConnection $ip -Port 3389 -InformationLevel Quiet -WarningAction SilentlyContinue)) { Start-Sleep 3 }
+    do { $port = Get-RdpPort } until (Test-NetConnection $ip -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue)
 
     $rdp = Join-Path $env:TEMP "$Vm.rdp"
     @(
-      "full address:s:$ip"
+      "full address:s:${ip}:$port"
       if ($User) { "username:s:$User" }
       "screen mode id:i:2", "dynamic resolution:i:1", "smart sizing:i:1"
       "connection type:i:6", "networkautodetect:i:0", "bandwidthautodetect:i:1"
@@ -53,14 +59,14 @@ switch ($Command) {
       "enablecredsspsupport:i:1", "prompt for credentials:i:0"
     ) | Set-Content -Path $rdp -Encoding ASCII
     Start-Process mstsc.exe $rdp
-    Write-Host "Opened Remote Desktop to $ip"
+    Write-Host "Opened Remote Desktop to ${ip}:$port"
   }
   "close" {
     if ($status -ne "RUNNING") { Write-Host "$Vm is $status; nothing to suspend."; break }
     Write-Host "Suspending (saving memory to disk, takes a minute or two)..."
     & $gcloud compute instances suspend $Vm @common | Out-Null
     Wait-Status @("SUSPENDED")
-    Write-Host "Suspended. Only the disk and saved memory are billed now (~`$0.36/day)."
+    Write-Host "Suspended. Only the disk and saved memory are billed now (~`$0.51/day)."
   }
   "shutdown" {
     if ($status -ne "RUNNING") { Write-Host "$Vm is $status."; break }

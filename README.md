@@ -119,15 +119,16 @@ gcloud iam service-accounts add-iam-policy-binding rdp-vm-self@$PROJECT.iam.gser
   --member="serviceAccount:rdp-website@$PROJECT.iam.gserviceaccount.com" --role=roles/iam.serviceAccountUser
 ```
 
-### 5. Firewall: RDP over TCP **and UDP**
-UDP makes the mouse, scrolling and video much smoother. Restrict the rule to your own IP if your home IP is stable. Find it at `curl ifconfig.me`.
+### 5. Firewall: RDP on a non-standard port, over TCP **and UDP**
+Bots scan port 3389 on every IP on the internet, about 11,000 attempts a day on this VM. Moving RDP to another port drops most of that. UDP makes the mouse, scrolling and video much smoother.
 ```bash
-gcloud compute firewall-rules create allow-rdp-tcp-udp --network=default \
-  --allow=tcp:3389,udp:3389 --target-tags=rdp --source-ranges=0.0.0.0/0
-# Optional, tighter: --source-ranges=YOUR.HOME.IP/32
+gcloud compute firewall-rules create rdp-custom-port --network=default \
+  --allow=tcp:47231,udp:47231 --target-tags=rdp --source-ranges=0.0.0.0/0
+gcloud compute instances add-metadata $VM --zone=$ZONE --metadata=rdp-port=47231
 ```
-The default network may already have a `default-allow-rdp` rule open to the whole internet. If you restricted yours, delete that one:
-`gcloud compute firewall-rules delete default-allow-rdp`
+The boot script (step 7) moves Windows to that port and reports it, so the website, the .rdp file and `pc\rdp.ps1` always use the right one. On a phone, enter the address as `IP:47231`.
+
+Once it works, disable 3389: `gcloud compute firewall-rules update default-allow-rdp --disabled`
 
 ### 6. Create your Windows user
 ```bash

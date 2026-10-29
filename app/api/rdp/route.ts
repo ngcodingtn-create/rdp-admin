@@ -10,15 +10,16 @@ export async function GET() {
   if (!(await isAuthed())) return new Response("Unauthorized", { status: 401 });
 
   let ip: string | null;
+  let port: number;
   try {
-    ip = (await getVm()).ip;
+    ({ ip, rdpPort: port } = await getVm());
   } catch (err) {
     return new Response(gcpErrorMessage(err), { status: 502 });
   }
   if (!ip) return new Response("The VM has no external IP right now (is it running?)", { status: 409 });
 
   const lines = [
-    `full address:s:${ip}`,
+    `full address:s:${port === 3389 ? ip : `${ip}:${port}`}`,
     process.env.RDP_USERNAME ? `username:s:${process.env.RDP_USERNAME}` : null,
     "screen mode id:i:2",
     "use multimon:i:0",

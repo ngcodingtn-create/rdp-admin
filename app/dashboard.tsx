@@ -20,6 +20,7 @@ type Vm = {
   lastSuspend: string | null;
   hourly: number | null;
   suspendedDaily: number | null;
+  rdpPort: number;
 };
 
 type Creds = { username: string | null; password: string | null };
@@ -162,7 +163,7 @@ export default function Dashboard() {
   const off = status === "TERMINATED" || status === "STOPPED";
   const suspended = status === "SUSPENDED";
   const busy = pending !== null || isBusy(status);
-  const address = vm?.ip ? `${vm.ip}:3389` : null;
+  const address = vm?.ip ? `${vm.ip}:${vm.rdpPort}` : null;
   const sessionHours = running ? hoursSince(vm?.lastStart ?? null) : 0;
   const specs = [
     vm?.cpus && `${vm.cpus} vCPU`,
@@ -246,7 +247,7 @@ export default function Dashboard() {
           <dd>
             {vm?.ip ? (
               <>
-                <span className="mono">mstsc /v:{vm.ip}</span> <Copy value={`mstsc /v:${vm.ip}`} />
+                <span className="mono">mstsc /v:{address}</span> <Copy value={`mstsc /v:${address}`} />
               </>
             ) : (
               "—"

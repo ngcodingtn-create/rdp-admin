@@ -70,6 +70,7 @@ export type VmStatus = {
   lastSuspend: string | null;
   hourly: number | null;
   suspendedDaily: number | null;
+  rdpPort: number;
 };
 
 type Instance = {
@@ -138,6 +139,7 @@ export async function getVm(): Promise<VmStatus> {
   const boot = data.disks?.find((d) => d.boot) ?? data.disks?.[0];
   const nic = data.networkInterfaces?.[0];
   const diskGb = boot?.diskSizeGb ? Number(boot.diskSizeGb) : null;
+  const rdpPort = data.status === "RUNNING" ? await reportedRdpPort(c) : DEFAULT_RDP_PORT;
   return {
     name: data.name,
     status: data.status,
@@ -155,7 +157,23 @@ export async function getVm(): Promise<VmStatus> {
     lastStop: data.lastStopTimestamp ?? null,
     lastSuspend: data.lastSuspendedTimestamp ?? null,
     ...costs(machineType, diskGb),
+    rdpPort,
   };
+}
+
+const DEFAULT_RDP_PORT = Number(process.env.RDP_PORT ?? 3389);
+
+// The port Windows actually listens on, as reported at boot by vm/startup.ps1 (guest attribute rdp/port).
+async function reportedRdpPort(c: AuthClient): Promise<number> {
+  try {
+    const { data } = await c.request<{ queryValue?: { items?: { key: string; value: string }[] } }>({
+      url: `${instanceUrl()}/getGuestAttributes?queryPath=rdp/`,
+    });
+    const port = Number(data.queryValue?.items?.find((i) => i.key === "port")?.value);
+    return Number.isInteger(port) && port > 0 ? port : DEFAULT_RDP_PORT;
+  } catch {
+    return DEFAULT_RDP_PORT;
+  }
 }
 
 // Fire and forget: Compute Engine returns an Operation immediately; the UI polls getVm().

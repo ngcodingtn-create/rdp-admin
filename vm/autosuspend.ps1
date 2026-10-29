@@ -26,7 +26,8 @@ function Log($msg) { Add-Content -Path $logFile -Value "$($now.ToString('s'))  $
 function Recent($time) { $time -and (($now - $time).TotalMinutes -lt $IdleMinutes) }
 
 # Someone is connected if there is an established RDP TCP connection or an active rdp-tcp session.
-$tcp = [bool](Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue)
+$rdpPort = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp").PortNumber
+$tcp = [bool](Get-NetTCPConnection -LocalPort $rdpPort -State Established -ErrorAction SilentlyContinue)
 $session = [bool]((qwinsta 2>$null) -match "rdp-tcp#\S*\s+.*\s+Active")
 $rdp = $tcp -or $session
 
