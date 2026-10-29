@@ -171,10 +171,9 @@ export async function runAction(action: Action): Promise<{ operation: string }> 
 // Asks the VM to unlock locked-out Windows accounts: vm/unlock-watcher.ps1 long-polls the
 // `rdp-unlock` metadata key and unlocks every locked local account when its value changes.
 export async function requestUnlock(): Promise<{ requested: string }> {
+  type Metadata = { metadata: { fingerprint: string; items?: { key: string; value: string }[] } };
   const c = await auth();
-  const { data } = await c.request<{
-    metadata: { fingerprint: string; items?: { key: string; value: string }[] };
-  }>({ url: instanceUrl() });
+  const { data } = await c.request<Metadata>({ url: instanceUrl() });
   const requested = new Date().toISOString();
   const items = (data.metadata.items ?? []).filter((i) => i.key !== "rdp-unlock");
   await c.request({
@@ -182,7 +181,13 @@ export async function requestUnlock(): Promise<{ requested: string }> {
     method: "POST",
     data: { fingerprint: data.metadata.fingerprint, items: [...items, { key: "rdp-unlock", value: requested }] },
   });
-  return { requested };
+  // setMetadata is asynchronous and can still fail (e.g. permissions), so confirm the value landed.
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const { data: now } = await c.request<Metadata>({ url: instanceUrl() });
+    if (now.metadata.items?.some((m) => m.key === "rdp-unlock" && m.value === requested)) return { requested };
+  }
+  throw new Error("The unlock request did not reach the VM. Try again.");
 }
 
 // Turns a Google API error into a short human-readable message.

@@ -113,7 +113,7 @@ gcloud compute instances add-iam-policy-binding $VM --zone=$ZONE \
 ```
 If `add-iam-policy-binding` isn't found, run the same commands with `gcloud beta compute ...`.
 
-If **Start** or **Resume** later fails with an `iam.serviceAccounts.actAs` error, also run:
+The **Unlock Windows account** button changes the VM's metadata, and Google requires "act as" rights on the VM's own service account for that, so also run:
 ```bash
 gcloud iam service-accounts add-iam-policy-binding rdp-vm-self@$PROJECT.iam.gserviceaccount.com \
   --member="serviceAccount:rdp-website@$PROJECT.iam.gserviceaccount.com" --role=roles/iam.serviceAccountUser
