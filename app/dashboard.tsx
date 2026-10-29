@@ -84,6 +84,7 @@ export default function Dashboard() {
   const [pending, setPending] = useState<Action | null>(null);
   const [creds, setCreds] = useState<Creds | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [unlock, setUnlock] = useState<"idle" | "sending" | "sent" | "failed">("idle");
 
   const refresh = useCallback(async () => {
     const res = await fetch("/api/vm", { cache: "no-store" });
@@ -142,6 +143,12 @@ export default function Dashboard() {
       setPending(null);
     }
     refresh();
+  }
+
+  async function unlockAccount() {
+    setUnlock("sending");
+    const res = await fetch("/api/unlock", { method: "POST" });
+    setUnlock(res.ok ? "sent" : "failed");
   }
 
   async function logout() {
@@ -249,6 +256,20 @@ export default function Dashboard() {
         <p className="hint">
           On a phone or Mac use the Windows App (Microsoft Remote Desktop) with the address, username and password above.
         </p>
+        {running && (
+          <div className="actions" style={{ marginTop: 16 }}>
+            <button disabled={unlock === "sending"} onClick={unlockAccount}>
+              {unlock === "sending" ? "Unlocking…" : "Unlock Windows account"}
+            </button>
+            <p className="hint">
+              {unlock === "sent"
+                ? "Done: the VM unlocks every locked account within a few seconds. Sign in again, pasting the password above."
+                : unlock === "failed"
+                  ? "Could not reach the VM. Try again, or use Full shutdown then Start (accounts are unlocked at every boot)."
+                  : "Use this if Remote Desktop says the account has been locked."}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="card">

@@ -89,7 +89,7 @@ gcloud iam service-accounts create rdp-website --display-name="RDP control websi
 gcloud iam roles create rdpSelfSuspend --project=$PROJECT --title="RDP self suspend" \
   --permissions=compute.instances.suspend
 gcloud iam roles create rdpControl --project=$PROJECT --title="RDP control" \
-  --permissions=compute.instances.get,compute.instances.start,compute.instances.stop,compute.instances.suspend,compute.instances.resume
+  --permissions=compute.instances.get,compute.instances.start,compute.instances.stop,compute.instances.suspend,compute.instances.resume,compute.instances.setMetadata
 ```
 
 ### 3. Create the VM
@@ -150,11 +150,29 @@ What the script does:
 - **Sessions:** a disconnected session is never ended, and you always get your own session back.
 - **Smoother RDP:** UDP transport, H.264/AVC 444 and 60 fps.
 - **Desktop feel:** sound on, full visual effects, and no Server Manager window at sign-in.
-- **Brute-force protection:** account lockout after 10 wrong passwords.
+- **No account lockout:** bots try thousands of passwords a day on any open RDP port, and with lockout on they kept locking you out. The long random password is the protection.
 - **Auto-suspend:** installs a task that suspends the VM after 30 minutes with nobody connected **and Claude Code idle**, so forgetting it never costs a full night.
   - Claude counts as working while its session logs (`%USERPROFILE%\.claude\projects\**\*.jsonl`) keep changing. They change on every step, from the CLI or the desktop app's Code tab, so no hooks or other setup are needed.
   - To keep the VM on no matter what, create the file `C:\ProgramData\rdp-autosuspend\keepawake`. Delete it to go back to normal.
   - Log: `C:\ProgramData\rdp-autosuspend\log.txt`. The idle limit is `$IdleMinutes` in `autosuspend.ps1`.
+
+**Boot script and the Unlock button** (run from Cloud Shell or the PC, in this project folder):
+```bash
+gcloud compute instances add-metadata $VM --zone=$ZONE \
+  --metadata-from-file=windows-startup-script-ps1=vm/startup.ps1,rdp-unlock-watcher=vm/unlock-watcher.ps1 \
+  --metadata=rdp-unlock=init,enable-guest-attributes=TRUE
+```
+At every boot, `vm/startup.ps1`:
+- turns lockout off and unlocks any locked account
+- prints the last 24 h of failed sign-ins to the serial log
+- starts `vm/unlock-watcher.ps1`
+
+The watcher is what the website's **Unlock Windows account** button talks to. It goes through the VM's metadata server, so it needs no open port or password.
+
+To see who has been trying to sign in:
+```bash
+gcloud compute instances get-serial-port-output $VM --zone=$ZONE | grep rdp-startup
+```
 
 **Test it:**
 1. Open Notepad and type something.
@@ -211,6 +229,10 @@ Billing → Budgets & alerts → create a budget, for example $50/month, with em
 2. Click **Download .rdp file** and open it. Everything is as you left it.
 3. When done, **close the RDP window** (don't sign out), then click **Suspend** on the website.
    If you forget, the VM suspends itself after 30 minutes with nobody connected.
+
+**"The user account has been locked":** click **Unlock Windows account** on the website (Connection card), then sign in again by pasting the password from the site.
+- If the VM can't be reached, **Full shutdown** then **Start** also works, because every boot unlocks all accounts.
+- With lockout off this shouldn't happen any more. If it does, the usual cause is a device with an old saved password, such as your phone's RDP app: update the password there.
 
 Use **Full shutdown** only for maintenance, such as changing the machine type or enlarging the disk. It closes all apps, but your files and browser logins stay on the disk.
 
@@ -299,5 +321,7 @@ vm/setup-windows.ps1         one-time Windows setup (run inside the VM)
 vm/autosuspend.ps1           idle watcher installed by the setup script (-Now = suspend immediately)
 vm/overnight.ps1             unattended Claude Code runner that suspends the VM when done
 vm/tune-for-claude.ps1       Defender exclusions, power plan, long paths for parallel Claude sessions
+vm/startup.ps1               boot script (VM metadata): no lockout, unlock, failed-login report, starts the watcher
+vm/unlock-watcher.ps1        unlocks accounts when the website's Unlock button is pressed
 vm/PROMPT.example.md         per-round instructions for the overnight runner
 ```

@@ -168,6 +168,23 @@ export async function runAction(action: Action): Promise<{ operation: string }> 
   return { operation: data.name };
 }
 
+// Asks the VM to unlock locked-out Windows accounts: vm/unlock-watcher.ps1 long-polls the
+// `rdp-unlock` metadata key and unlocks every locked local account when its value changes.
+export async function requestUnlock(): Promise<{ requested: string }> {
+  const c = await auth();
+  const { data } = await c.request<{
+    metadata: { fingerprint: string; items?: { key: string; value: string }[] };
+  }>({ url: instanceUrl() });
+  const requested = new Date().toISOString();
+  const items = (data.metadata.items ?? []).filter((i) => i.key !== "rdp-unlock");
+  await c.request({
+    url: `${instanceUrl()}/setMetadata`,
+    method: "POST",
+    data: { fingerprint: data.metadata.fingerprint, items: [...items, { key: "rdp-unlock", value: requested }] },
+  });
+  return { requested };
+}
+
 // Turns a Google API error into a short human-readable message.
 export function gcpErrorMessage(err: unknown): string {
   const e = err as { response?: { data?: { error?: { message?: string } } }; message?: string };

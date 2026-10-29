@@ -35,8 +35,8 @@ Set-Reg $ts "MaxConnectionTime" 0      # 0 = no limit on active sessions
 Set-Reg $ts "fResetBroken" 0           # on a time limit, disconnect instead of logging off
 Set-Reg $ts "fSingleSessionPerUser" 1  # reconnect to your existing session
 
-Step "Security: lock an account for 15 min after 10 wrong passwords (slows RDP brute force)"
-net accounts /lockoutthreshold:10 /lockoutwindow:15 /lockoutduration:15
+Step "Security: no account lockout (internet bots would keep locking you out; the long random password is the protection)"
+net accounts /lockoutthreshold:0
 
 Step "RDP smoothness: UDP transport, AVC 444, 60 fps"
 Set-Reg $ts "SelectTransport" 0        # use both UDP and TCP
