@@ -23,7 +23,11 @@ $ws = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tc
 if ((Get-ItemProperty $ws).PortNumber -ne $port) {
   Set-ItemProperty $ws -Name PortNumber -Value $port -Type DWord
   Set-ItemProperty $ws -Name UdpPortNumber -Value $port -Type DWord
+  # -Force also stops the services that depend on TermService (e.g. UmRdpService) and doesn't
+  # start them again; without them a session can sit on a black screen. Start them explicitly.
+  $dependents = (Get-Service TermService).DependentServices
   Restart-Service TermService -Force
+  $dependents | Start-Service -ErrorAction SilentlyContinue
   Write-Output "rdp-startup: RDP moved to port $port"
 }
 Get-NetFirewallRule -DisplayName "RDP custom port*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -35,6 +39,14 @@ if ($port -ne 3389) {
 # Tell the website and the PC script which port to use (guest attribute rdp/port).
 try { Invoke-RestMethod -Method Put -Headers $h -Body "$port" "$md/guest-attributes/rdp/port" | Out-Null } catch {}
 Write-Output "rdp-startup: RDP listening on port $port"
+# Make sure everything a session needs is running (an earlier version of this script left some stopped).
+foreach ($svc in "TermService", "UmRdpService", "SessionEnv", "Audiosrv", "AudioEndpointBuilder") {
+  $s = Get-Service $svc -ErrorAction SilentlyContinue
+  if ($s -and $s.Status -ne "Running" -and $s.StartType -ne "Disabled") {
+    Start-Service $svc -ErrorAction SilentlyContinue
+    Write-Output "rdp-startup: started $svc"
+  }
+}
 
 net accounts /lockoutthreshold:0 | Out-Null
 Write-Output "rdp-startup: account lockout disabled"
