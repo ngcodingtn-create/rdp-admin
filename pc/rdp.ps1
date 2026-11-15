@@ -66,7 +66,7 @@ switch ($Command) {
     Write-Host "Suspending (saving memory to disk, takes a minute or two)..."
     & $gcloud compute instances suspend $Vm @common | Out-Null
     Wait-Status @("SUSPENDED")
-    Write-Host "Suspended. Only the disk and saved memory are billed now (~`$0.51/day)."
+    Write-Host "Suspended. Only the disk and saved memory are billed now (~`$1.00/day with the 250 GB disk)."
   }
   "shutdown" {
     if ($status -ne "RUNNING") { Write-Host "$Vm is $status."; break }

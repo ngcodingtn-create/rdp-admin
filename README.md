@@ -295,6 +295,14 @@ gcloud compute instances set-machine-type rdp-desktop --zone=europe-west1-b --ma
 gcloud compute instances start rdp-desktop --zone=europe-west1-b
 ```
 
+**Grow the disk** (live, no stop needed; you can grow a disk but never shrink it):
+```bash
+gcloud compute disks snapshot rdp-desktop --zone=europe-west1-b --snapshot-names=rdp-desktop-before-resize
+gcloud compute disks resize rdp-desktop --zone=europe-west1-b --size=250GB
+```
+- Windows still sees the old size until `C:` is extended. The boot script does that at every boot, so a restart is enough. To do it without a restart, run this in an elevated PowerShell inside the VM: `Resize-Partition -DriveLetter C -Size (Get-PartitionSupportedSize -DriveLetter C).SizeMax`
+- Each extra GB costs $0.10 a month, running or suspended. The disk is now **250 GB** ($25/month), so the t2d-standard-8 costs **~$0.78/h** running and **~$1.00/day** suspended.
+
 **Then, once, inside the VM** (elevated PowerShell, from the repo's `vm` folder):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tune-for-claude.ps1 -WorkDir C:\work
@@ -322,7 +330,7 @@ vm/setup-windows.ps1         one-time Windows setup (run inside the VM)
 vm/autosuspend.ps1           idle watcher installed by the setup script (-Now = suspend immediately)
 vm/overnight.ps1             unattended Claude Code runner that suspends the VM when done
 vm/tune-for-claude.ps1       Defender exclusions, power plan, long paths for parallel Claude sessions
-vm/startup.ps1               boot script (VM metadata): no lockout, unlock, failed-login report, starts the watcher
+vm/startup.ps1               boot script (VM metadata): RDP port, extend C:, no lockout, unlock, failed-login report, starts the watcher
 vm/unlock-watcher.ps1        unlocks accounts when the website's Unlock button is pressed
 vm/PROMPT.example.md         per-round instructions for the overnight runner
 ```
