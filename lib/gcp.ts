@@ -80,7 +80,7 @@ type Instance = {
   zone: string;
   cpuPlatform?: string;
   creationTimestamp?: string;
-  disks?: { boot?: boolean; diskSizeGb?: string }[];
+  disks?: { boot?: boolean; diskSizeGb?: string; source?: string }[];
   networkInterfaces?: { networkIP?: string; accessConfigs?: { natIP?: string }[] }[];
   lastStartTimestamp?: string;
   lastStopTimestamp?: string;
@@ -206,6 +206,55 @@ export async function requestUnlock(): Promise<{ requested: string }> {
     if (now.metadata.items?.some((m) => m.key === "rdp-unlock" && m.value === requested)) return { requested };
   }
   throw new Error("The unlock request did not reach the VM. Try again.");
+}
+
+export type Backup = { name: string; created: string; sizeGb: number | null; automatic: boolean; status: string };
+export type Backups = { snapshots: Backup[]; image: { name: string; created: string } | null };
+
+const projectUrl = () => `https://compute.googleapis.com/compute/v1/projects/${env("GCP_PROJECT_ID")}`;
+
+// Snapshots of the VM's disk (daily ones from the rdp-daily schedule, manual ones from "Back up now"
+// or ops/backup.ps1) and the newest bootable image in the rdp-desktop family.
+export async function listBackups(): Promise<Backups> {
+  const c = await auth();
+  type Snap = { name: string; creationTimestamp: string; storageBytes?: string; autoCreated?: boolean; status: string };
+  type Img = { name: string; creationTimestamp: string; family?: string };
+  const [snaps, imgs] = await Promise.all([
+    c.request<{ items?: Snap[] }>({ url: `${projectUrl()}/global/snapshots` }),
+    c.request<{ items?: Img[] }>({ url: `${projectUrl()}/global/images` }),
+  ]);
+  const snapshots = (snaps.data.items ?? [])
+    .sort((a, b) => b.creationTimestamp.localeCompare(a.creationTimestamp))
+    .slice(0, 8)
+    .map((s) => ({
+      name: s.name,
+      created: s.creationTimestamp,
+      sizeGb: s.storageBytes ? Number(s.storageBytes) / 1e9 : null,
+      automatic: Boolean(s.autoCreated),
+      status: s.status,
+    }));
+  const image =
+    (imgs.data.items ?? [])
+      .filter((i) => i.family === "rdp-desktop")
+      .sort((a, b) => b.creationTimestamp.localeCompare(a.creationTimestamp))
+      .map((i) => ({ name: i.name, created: i.creationTimestamp }))[0] ?? null;
+  return { snapshots, image };
+}
+
+// Starts a snapshot of the boot disk now (crash-consistent; takes 1-5 minutes in the background).
+export async function createBackup(): Promise<{ name: string }> {
+  const c = await auth();
+  const { data } = await c.request<Instance>({ url: instanceUrl() });
+  const diskName = (data.disks?.find((d) => d.boot) ?? data.disks?.[0])?.source?.split("/").pop();
+  if (!diskName) throw new Error("Could not find the VM's disk");
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  const name = `${data.name}-${stamp}`;
+  await c.request({
+    url: `${instanceUrl().replace(/\/instances\/.*$/, "")}/disks/${diskName}/createSnapshot`,
+    method: "POST",
+    data: { name, storageLocations: ["eu"], labels: { backup: "manual" } },
+  });
+  return { name };
 }
 
 // Turns a Google API error into a short human-readable message.

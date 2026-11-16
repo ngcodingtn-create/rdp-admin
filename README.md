@@ -314,6 +314,36 @@ It stops Defender from scanning every file Claude, Node and Git touch (the usual
 - Overnight, start one `overnight.ps1` per folder in its own PowerShell window. The VM suspends when the **last** one finishes.
 - All sessions share one Max 5x pool: 4 sessions use the 5-hour window about 4x faster. Use Sonnet for parallel work.
 
+## Backups, local copy, and moving to another Google account
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how everything fits together.
+
+**Automatic:** the disk is snapshotted every day at 03:00 UTC and each snapshot is kept 7 days (`rdp-daily` schedule). After the first full copy, only changes are stored. The website's **Backups** card lists the snapshots and has **Back up now**.
+
+**From your PC** (gcloud signed in to the account that owns the VM):
+```powershell
+.\ops\backup.ps1                                   # blueprint + snapshot
+.\ops\backup.ps1 -Image                            # + bootable image
+.\ops\backup.ps1 -Files -Download D:\rdp-backup    # + your folders in Cloud Storage and on this PC
+.\ops\backup.ps1 -Image -ShareWith other@gmail.com # + let another account use the image
+```
+- **Local copy:** `-Download` keeps `D:\rdp-backup\files` in sync with every user profile, `C:\work` and the RDP scripts. It skips `node_modules`, caches and temp files. It also copies `.env.local` into `D:\rdp-backup\secrets`, with the site password, Windows password and service-account key, so keep that folder private. Google's Windows license doesn't allow running the VM itself outside Google Cloud, so bootable copies stay in Google Cloud.
+- **Blueprint:** `infra/rdp-desktop.json` is refreshed on every backup. It records the machine, disk, port, firewall and roles, with no secrets.
+
+**Moving to another Google account** (for example when credits run out):
+1. In the new account: upgrade billing to a paid account (free trials can't run Windows) and create a project.
+2. From the old account, let the new one read the disk. This works even after the old billing is closed:
+   ```bash
+   gcloud compute disks add-iam-policy-binding rdp-desktop --zone=europe-west1-b --project=OLD_PROJECT \
+     --member=user:NEW_EMAIL --role=roles/compute.storageAdmin
+   ```
+3. Sign gcloud in with the new account (`gcloud auth login NEW_EMAIL`), then run:
+   ```powershell
+   .\ops\restore.ps1 -Project NEW_PROJECT -Account NEW_EMAIL
+   ```
+   It copies the disk into the new project (billed there) and rebuilds the VM, port, firewall, roles, boot script and daily snapshots from the blueprint. Then it points the website at the new project. Windows, apps, files and the Windows password come across unchanged.
+4. Set `RDP_PROJECT` (or edit `ops\settings.ps1` and `pc\rdp.ps1`) to the new project.
+
 ## Project layout
 ```
 app/
@@ -323,6 +353,8 @@ app/
   api/vm                     GET status
   api/vm/[action]            POST start | stop | suspend | resume
   api/rdp                    GET .rdp file for the current IP
+  backups.tsx, api/backups   Backups card: list snapshots and image, "Back up now"
+  api/unlock                 POST unlock locked Windows accounts
 lib/gcp.ts                   Compute Engine REST calls + auth (key or OIDC)
 lib/session.ts               password check and session cookie
 proxy.ts                     redirects to /login when not signed in
@@ -333,4 +365,11 @@ vm/tune-for-claude.ps1       Defender exclusions, power plan, long paths for par
 vm/startup.ps1               boot script (VM metadata): RDP port, extend C:, no lockout, unlock, failed-login report, starts the watcher
 vm/unlock-watcher.ps1        unlocks accounts when the website's Unlock button is pressed
 vm/PROMPT.example.md         per-round instructions for the overnight runner
+ops/settings.ps1             project, zone and VM names shared by the ops scripts
+ops/backup.ps1               snapshot, bootable image, file sync to Cloud Storage and this PC, share image
+ops/files-helper.sh          helper VM that copies your folders out of a snapshot
+ops/restore.ps1              rebuild the desktop in another project or account, repoint the website
+ops/export-blueprint.ps1     writes infra/rdp-desktop.json (the whole setup, no secrets)
+infra/rdp-desktop.json       the blueprint restore.ps1 rebuilds from
+docs/ARCHITECTURE.md         how the website, VM and backups fit together
 ```

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import BackupsCard from "./backups";
 
 type Vm = {
   name: string;
@@ -272,6 +273,8 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      <BackupsCard />
 
       <div className="card">
         <h2>Details</h2>

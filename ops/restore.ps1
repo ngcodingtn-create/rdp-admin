@@ -19,12 +19,16 @@ param(
   [string]$Source,
   [string]$Zone,
   [string]$MachineType,
+  [string]$UseImage,      # an image already copied into -Project by an earlier run: skip the copy
   [switch]$SkipWebsite
 )
 
 . "$PSScriptRoot\settings.ps1"
+# settings.ps1 sets the OLD project's defaults; the parameters given to this script win.
+$Project = $PSBoundParameters["Project"]
+$Zone = $PSBoundParameters["Zone"]
 $ErrorActionPreference = "Stop"
-$bp = Get-Content $BlueprintPath -Raw | ConvertFrom-Json
+$bp =Get-Content $BlueprintPath -Raw | ConvertFrom-Json
 if (-not $Zone) { $Zone = $bp.zone }
 if (-not $MachineType) { $MachineType = $bp.machineType }
 if (-not $Source) { $Source = "projects/$($bp.project)/zones/$($bp.zone)/disks/$($bp.disk.name)" }
@@ -40,12 +44,19 @@ $siteSa = "rdp-website@$Project.iam.gserviceaccount.com"
 Step "APIs"
 G services enable compute.googleapis.com iam.googleapis.com cloudresourcemanager.googleapis.com | Out-Null
 
-Step "Copying the disk into $Project as a bootable image (10-30 min for 250 GB)"
-$img = "$Vm-moved-$(Stamp)"
-$kind = if ($Source -match "/snapshots/") { "--source-snapshot" } elseif ($Source -match "/images/") { "--source-image-uri" } else { "--source-disk" }
-$srcArg = if ($kind -eq "--source-image-uri") { "https://www.googleapis.com/compute/v1/$Source" } else { $Source }
-G compute images create $img "$kind=$srcArg" --force --family=$Family --storage-location=$StorageLocation `
-  --guest-os-features=$($bp.disk.guestOsFeatures -join ',') --description="Moved from $Source" | Out-Null
+if ($UseImage) {
+  $img = $UseImage
+} else {
+  Step "Copying the disk into $Project as a bootable image (10-30 min for 250 GB)"
+  $img = "$Vm-moved-$(Stamp)"
+  $kind = if ($Source -match "/snapshots/") { "--source-snapshot" } elseif ($Source -match "/images/") { "--source-image-uri" } else { "--source-disk" }
+  $srcArg = if ($kind -eq "--source-image-uri") { "https://www.googleapis.com/compute/v1/$Source" } else { $Source }
+  # --async + polling: gcloud's own wait can give up on a copy this long.
+  G compute images create $img "$kind=$srcArg" --force --family=$Family --storage-location=$StorageLocation `
+    --guest-os-features=$($bp.disk.guestOsFeatures -join ',') --description="Moved from $Source" --async | Out-Null
+  do { Start-Sleep 30; $st = (GJson compute images describe $img).status; Write-Host "  image $st" } while ($st -eq "PENDING")
+  if ($st -ne "READY") { throw "Image copy ended as $st" }
+}
 $lic = (GJson compute images describe $img).licenses
 Write-Host "Image $img ready (Windows license: $(if ($lic) { ($lic | ForEach-Object { $_.Split('/')[-1] }) -join ', ' } else { 'MISSING' }))"
 
@@ -83,6 +94,12 @@ Step "Permissions on the VM"
 G compute instances add-iam-policy-binding $Vm --zone=$Zone --member="serviceAccount:$vmSa" --role="projects/$Project/roles/rdpSelfSuspend" | Out-Null
 G compute instances add-iam-policy-binding $Vm --zone=$Zone --member="serviceAccount:$siteSa" --role="projects/$Project/roles/rdpControl" | Out-Null
 G iam service-accounts add-iam-policy-binding $vmSa --member="serviceAccount:$siteSa" --role=roles/iam.serviceAccountUser | Out-Null
+# The website's Backups card lists snapshots/images and can take a snapshot ("Back up now").
+$backupPerms = "compute.snapshots.list,compute.snapshots.get,compute.snapshots.create,compute.snapshots.setLabels,compute.disks.createSnapshot,compute.images.list,compute.images.get"
+if (-not (GOk iam roles describe rdpBackup --project=$Project)) {
+  G iam roles create rdpBackup --project=$Project --title=rdpBackup --permissions=$backupPerms | Out-Null
+}
+G projects add-iam-policy-binding $Project --member="serviceAccount:$siteSa" --role="projects/$Project/roles/rdpBackup" --condition=None | Out-Null
 
 Step "Daily snapshots (kept 7 days)"
 if (-not (GOk compute resource-policies describe rdp-daily --region=$Region)) {
@@ -94,32 +111,7 @@ G compute disks add-resource-policies $Vm --resource-policies=rdp-daily --zone=$
 $ip = (GJson compute instances describe $Vm --zone=$Zone).networkInterfaces[0].accessConfigs[0].natIP
 
 if (-not $SkipWebsite) {
-  Step "Pointing the website at $Project"
-  $keyFile = Join-Path $env:TEMP "rdp-website-key.json"
-  G iam service-accounts keys create $keyFile --iam-account=$siteSa | Out-Null
-  $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($keyFile))
-  Remove-Item $keyFile
-  $vals = [ordered]@{ GCP_PROJECT_ID = $Project; GCE_ZONE = $Zone; GCE_INSTANCE = $Vm; GCP_SA_KEY_B64 = $b64 }
-  Push-Location $repo
-  try {
-    foreach ($k in $vals.Keys) {
-      # Feed the value through node so it reaches Vercel without the newline PowerShell pipes add.
-      $env:RDP_VAL = $vals[$k]
-      $sens = if ($k -eq "GCP_SA_KEY_B64") { ",'--sensitive'" } else { "" }
-      node -e "const r=require('child_process').spawnSync('npx',['-y','vercel@latest','env','add','$k','production','--force'$sens],{input:process.env.RDP_VAL,shell:true,encoding:'utf8'});process.exit(r.status)"
-      if ($LASTEXITCODE -ne 0) { throw "Could not set $k in Vercel" }
-      Write-Host "  Vercel $k updated"
-    }
-    Remove-Item Env:RDP_VAL
-    # Keep local dev in sync without printing any values.
-    $envPath = Join-Path $repo ".env.local"
-    if (Test-Path $envPath) {
-      $text = [IO.File]::ReadAllText($envPath)
-      foreach ($k in $vals.Keys) { $text = [regex]::Replace($text, "(?m)^$k=.*$", "$k=$($vals[$k])") }
-      [IO.File]::WriteAllText($envPath, $text)
-    }
-    npx -y vercel@latest deploy --prod --yes 2>&1 | Select-Object -Last 2
-  } finally { Pop-Location }
+  & "$PSScriptRoot\point-website.ps1" -Project $Project -Account $Account -Zone $Zone -Vm $Vm
 }
 
 Write-Host "`nDone. $Vm is running in $Project at ${ip}:$($bp.rdpPort) (first boot takes 2-3 minutes)." -ForegroundColor Green

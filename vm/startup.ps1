@@ -86,90 +86,22 @@ Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4624; StartTime = (G
 Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4740; StartTime = $since } -ErrorAction SilentlyContinue |
   ForEach-Object { Write-Output "rdp-startup: locked out $($_.Properties[0].Value) at $($_.TimeCreated.ToString('s'))" }
 
-# Tailscale: a WireGuard mesh VPN so RDP works even when the local network blocks the public port.
-# The VM joins the tailnet outbound (no inbound firewall rule) and gets a fixed 100.x address.
-# The auth key comes from the `tailscale-authkey` metadata key, so no secret is ever in this repo.
-# Set it once from Cloud Shell / the PC:
-#   gcloud compute instances add-metadata rdp-desktop --zone=europe-west1-b --metadata=tailscale-authkey=tskey-...
-# After the node is registered you can clear it again with --metadata=tailscale-authkey=.
+# Remove Tailscale and the ngrok relay if an earlier version of this script installed them (not used any more).
 try {
-  $tsKey = $null
-  try { $tsKey = Invoke-RestMethod -Headers $h "$md/attributes/tailscale-authkey" } catch {}
-  $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
-  if (-not (Test-Path $tsExe)) {
-    $msi = "$env:TEMP\tailscale-setup.msi"
-    Invoke-WebRequest -UseBasicParsing "https://pkgs.tailscale.com/stable/tailscale-setup-1.104.6-amd64.msi" -OutFile $msi
-    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /quiet /norestart TS_UNATTENDEDMODE=always"
-    Write-Output "rdp-startup: Tailscale installed"
+  $ts = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -like "Tailscale*" -and $_.PSChildName -like "{*}" }
+  foreach ($p in $ts) {
+    Start-Process msiexec.exe -Wait -ArgumentList "/x $($p.PSChildName) /quiet /norestart"
+    Write-Output "rdp-startup: removed $($p.DisplayName)"
   }
-  if ((Test-Path $tsExe) -and $tsKey -and ($tsKey.Trim() -like "tskey-*")) {
-    & $tsExe up --auth-key=$($tsKey.Trim()) --unattended --hostname=rdp-desktop --accept-dns=false 2>&1 |
-      ForEach-Object { Write-Output "rdp-startup: tailscale up: $_" }
-    $tsIp = (& $tsExe ip -4 2>$null | Select-Object -First 1)
-    if ($tsIp) {
-      try { Invoke-RestMethod -Method Put -Headers $h -Body "$tsIp" "$md/guest-attributes/tailscale/ip" | Out-Null } catch {}
-      Write-Output "rdp-startup: Tailscale IP $tsIp"
-    }
-  } elseif (-not $tsKey) {
-    Write-Output "rdp-startup: no tailscale-authkey metadata; skipping Tailscale join"
+  if (Get-ScheduledTask -TaskName "ngrok-rdp" -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName "ngrok-rdp" -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName "ngrok-rdp" -Confirm:$false
+    Write-Output "rdp-startup: removed ngrok task"
   }
-} catch { Write-Output "rdp-startup: Tailscale setup failed: $($_.Exception.Message)" }
-
-# ngrok TCP relay: the VM dials OUT to ngrok's edge and ngrok publishes a public tcp://HOST:PORT
-# that forwards to local RDP. Works even when the VM's own public IP is blocked by the client's
-# network, because the client connects to ngrok, not to the VM. Authtoken from the `ngrok-authtoken`
-# metadata key (no secret in the repo). Set it with:
-#   gcloud compute instances add-metadata rdp-desktop --zone=europe-west1-b --metadata=ngrok-authtoken=<token>
-# The current public endpoint is reported to the serial log and to guest attribute ngrok/endpoint.
-try {
-  $ngToken = $null
-  try { $ngToken = Invoke-RestMethod -Headers $h "$md/attributes/ngrok-authtoken" } catch {}
-  if ($ngToken -and $ngToken.Trim()) {
-    $ngDir = "C:\ngrok"; New-Item -ItemType Directory -Force -Path $ngDir | Out-Null
-    $ngExe = "$ngDir\ngrok.exe"
-    if (-not (Test-Path $ngExe)) {
-      $zip = "$env:TEMP\ngrok.zip"
-      Invoke-WebRequest -UseBasicParsing "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile $zip
-      Expand-Archive -Path $zip -DestinationPath $ngDir -Force
-      Write-Output "rdp-startup: ngrok downloaded"
-    }
-    # Config (v2 format, accepted by the v3 agent): one tcp tunnel to the RDP port, EU edge.
-    @("version: `"2`"", "authtoken: $($ngToken.Trim())", "region: eu", "console_ui: false",
-      "tunnels:", "  rdp:", "    proto: tcp", "    addr: $port") |
-      Set-Content -Path "$ngDir\ngrok.yml" -Encoding ASCII
-    # Clean any prior service/task, then run ngrok as a SYSTEM scheduled task that logs to a file.
-    & $ngExe service stop 2>&1 | Out-Null
-    & $ngExe service uninstall 2>&1 | Out-Null
-    Unregister-ScheduledTask -TaskName "ngrok-rdp" -Confirm:$false -ErrorAction SilentlyContinue
-    $ngLog = "$ngDir\ngrok.log"; Remove-Item $ngLog -ErrorAction SilentlyContinue
-    $ngAct = New-ScheduledTaskAction -Execute $ngExe -Argument "start rdp --config `"$ngDir\ngrok.yml`" --log `"$ngLog`" --log-format logfmt"
-    $ngSet = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
-      -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName "ngrok-rdp" -Action $ngAct -Trigger (New-ScheduledTaskTrigger -AtStartup) `
-      -Settings $ngSet -User "SYSTEM" -RunLevel Highest -Force | Out-Null
-    Start-ScheduledTask -TaskName "ngrok-rdp"
-    # Wait for the local agent API, then read the public endpoint.
-    $ngEndpoint = $null
-    for ($i = 0; $i -lt 40; $i++) {
-      Start-Sleep 2
-      try {
-        $t = (Invoke-RestMethod "http://127.0.0.1:4040/api/tunnels").tunnels | Where-Object { $_.proto -eq "tcp" } | Select-Object -First 1
-        if ($t.public_url) { $ngEndpoint = $t.public_url -replace '^tcp://', ''; break }
-      } catch {}
-    }
-    if ($ngEndpoint) {
-      try { Invoke-RestMethod -Method Put -Headers $h -Body "$ngEndpoint" "$md/guest-attributes/ngrok/endpoint" | Out-Null } catch {}
-      Write-Output "rdp-startup: ngrok endpoint $ngEndpoint"
-    } else {
-      Write-Output "rdp-startup: ngrok no endpoint; diagnostics follow"
-      Write-Output "rdp-startup: task state = $((Get-ScheduledTask -TaskName 'ngrok-rdp' -ErrorAction SilentlyContinue).State)"
-      & $ngExe diagnose 2>&1 | Select-Object -First 5 | ForEach-Object { Write-Output "rdp-startup: diag: $_" }
-      Get-Content $ngLog -Tail 25 -ErrorAction SilentlyContinue | ForEach-Object { Write-Output "rdp-startup: nglog: $_" }
-    }
-  } else {
-    Write-Output "rdp-startup: no ngrok-authtoken metadata; skipping ngrok relay"
-  }
-} catch { Write-Output "rdp-startup: ngrok setup failed: $($_.Exception.Message)" }
+  Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force
+  if (Test-Path "C:\ngrok") { Remove-Item "C:\ngrok" -Recurse -Force; Write-Output "rdp-startup: removed C:\ngrok" }
+} catch { Write-Output "rdp-startup: Tailscale/ngrok cleanup failed: $($_.Exception.Message)" }
 
 try {
   $code = Invoke-RestMethod -Headers $h "$md/attributes/rdp-unlock-watcher"
