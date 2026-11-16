@@ -1,7 +1,7 @@
 # Shared settings for the backup / restore scripts. Override any of them with environment variables,
 # e.g.  $env:RDP_PROJECT = "my-new-project"  before running a script.
 
-$Project = if ($env:RDP_PROJECT) { $env:RDP_PROJECT } else { "cohesive-bolt-510011-q3" }
+$Project = if ($env:RDP_PROJECT) { $env:RDP_PROJECT } else { "infolab-514909" }
 $Zone    = if ($env:RDP_ZONE)    { $env:RDP_ZONE }    else { "europe-west1-b" }
 $Vm      = if ($env:RDP_VM)      { $env:RDP_VM }      else { "rdp-desktop" }
 $Region  = $Zone -replace '-[a-z]$', ''

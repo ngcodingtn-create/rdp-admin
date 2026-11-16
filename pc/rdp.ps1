@@ -8,7 +8,7 @@
 #>
 param([ValidateSet("open", "close", "status", "shutdown")][string]$Command = "status")
 
-$Project = "cohesive-bolt-510011-q3"
+$Project = "infolab-514909"
 $Zone = "europe-west1-b"
 $Vm = "rdp-desktop"
 $User = if ($env:RDP_USER) { $env:RDP_USER } else { "ngcoding" }   # Windows user on the VM, pre-filled in the .rdp file
